@@ -30,6 +30,7 @@ namespace EventStore.Projections.Core.Services.Processing
         private readonly ProjectionVersion _projectionVersion;
 
         private List<IEnvelope> _awaitingStreams;
+        private Queue<EmittedStream> _emittedStreamsQueue;
 
         public ProjectionCheckpoint(
             IODispatcher ioDispatcher,
@@ -54,6 +55,7 @@ namespace EventStore.Projections.Core.Services.Processing
             _from = _last = from;
             _maxWriteBatchLength = maxWriteBatchLength;
             _logger = logger;
+            _emittedStreamsQueue = new Queue<EmittedStream>();
         }
 
         public void Start()
@@ -77,6 +79,7 @@ namespace EventStore.Projections.Core.Services.Processing
             {
                 EmitEventsToStream(eventGroup.Key, eventGroup.ToArray());
             }
+            ProcessQueue();
         }
 
         private void UpdateLastPosition(EmittedEventEnvelope[] events)
@@ -142,6 +145,7 @@ namespace EventStore.Projections.Core.Services.Processing
                 if (_started)
                     stream.Start();
                 _emittedStreams.Add(streamId, stream);
+                _emittedStreamsQueue.Enqueue(stream);
             }
             stream.EmitEvents(emittedEvents.Select(v => v.Event).ToArray());
         }
@@ -197,15 +201,46 @@ namespace EventStore.Projections.Core.Services.Processing
             if (_awaitingStreams == null)
                 _awaitingStreams = new List<IEnvelope>();
             _awaitingStreams.Add(message.Envelope);
+            _processing = false;
+            ProcessQueue();
         }
 
         public void Handle(CoreProjectionProcessingMessage.EmittedStreamWriteCompleted message)
         {
-            var awaitingStreams = _awaitingStreams;
-            _awaitingStreams = null; // still awaiting will re-register
-            if (awaitingStreams != null)
-                foreach (var stream in awaitingStreams)
-                    stream.ReplyWith(message);
+            _processing = false;
+            ProcessQueue();
+        }
+
+        private bool _processing = false;
+        private void ProcessQueue()
+        {
+            if (!_started || _processing) return;
+            _processing = true;
+
+            for(int i = 0; i < _emittedStreamsQueue.Count; i++)
+            {
+                EmittedStream emittedStream = null;
+                try
+                {
+                    emittedStream = _emittedStreamsQueue.Dequeue();
+                    if(emittedStream != null)
+                    {
+                        if(emittedStream.GetWritePendingEvents() > 0)
+                        {
+                            emittedStream.ProcessWrites();
+                            return;
+                        }
+                    }
+                }
+                finally
+                {
+                    if(emittedStream != null)
+                    {
+                        _emittedStreamsQueue.Enqueue(emittedStream);
+                    }
+                }
+            }
+            _processing = false;
         }
     }
 }

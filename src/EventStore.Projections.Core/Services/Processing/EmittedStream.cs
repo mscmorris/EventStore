@@ -39,7 +39,6 @@ namespace EventStore.Projections.Core.Services.Processing
         private bool _checkpointRequested;
         private bool _awaitingWriteCompleted;
         private bool _awaitingMetadataWriteCompleted;
-        private bool _awaitingReady;
         private bool _awaitingListEventsCompleted;
         private bool _started;
 
@@ -177,7 +176,6 @@ namespace EventStore.Projections.Core.Services.Processing
             EnsureCheckpointNotRequested();
             foreach (var @event in events)
                 _pendingWrites.Enqueue(@event);
-            ProcessWrites();
         }
 
         public void Checkpoint()
@@ -195,7 +193,6 @@ namespace EventStore.Projections.Core.Services.Processing
             if (_started)
                 throw new InvalidOperationException("Stream is already started");
             _started = true;
-            ProcessWrites();
         }
 
         public int GetWritePendingEvents()
@@ -384,7 +381,7 @@ namespace EventStore.Projections.Core.Services.Processing
                        || e.OriginalEvent.EventType == SystemEventTypes.V1__StreamCreated__);
         }
 
-        private void ProcessWrites()
+        public void ProcessWrites()
         {
             if (_started && !_awaitingListEventsCompleted && !_awaitingWriteCompleted
                 && !_awaitingMetadataWriteCompleted && _pendingWrites.Count > 0)
@@ -503,7 +500,6 @@ namespace EventStore.Projections.Core.Services.Processing
                     _readyHandler.Handle(
                         new CoreProjectionProcessingMessage.EmittedStreamAwaiting(
                             _streamId, new SendToThisEnvelope(this)));
-                    _awaitingReady = true;
                     break;
                 }
                 _pendingWrites.Dequeue();
@@ -618,7 +614,6 @@ namespace EventStore.Projections.Core.Services.Processing
         private void OnWriteCompleted()
         {
             NotifyWriteCompleted();
-            ProcessWrites();
             ProcessRequestedCheckpoint();
         }
 
@@ -707,9 +702,6 @@ namespace EventStore.Projections.Core.Services.Processing
 
         public void Handle(CoreProjectionProcessingMessage.EmittedStreamWriteCompleted message)
         {
-            if (!_awaitingReady)
-                throw new InvalidOperationException("AwaitingReady state required");
-            ProcessWrites();
         }
     }
 
